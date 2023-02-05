@@ -1,0 +1,8 @@
+numpy==1.21
+pandas
+pyarrow
+ipykernel
+sqlalchemy
+pgcli
+psycopg-binary
+psycopg2-binary
