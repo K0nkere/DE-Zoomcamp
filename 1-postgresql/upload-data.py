@@ -1,113 +1,101 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
 import pandas as pd
 import os
 
+import argparse
 import pyarrow as pa 
+from pathlib import Path
 from pyarrow.parquet import ParquetFile
 
-# import psycopg2
+# import psycopg2 # no need to load under anaconda env
 from sqlalchemy import create_engine
-
-from datetime import datetime
-
-from pathlib import Path
-
 from time import time
 
 
-# In[ ]:
+def convert_to_parquet(output: Path) -> Path:
+    data = pd.read_csv(output)
+    output_path = os.path.join(os.path.split(output)[0], ".".join([os.path.split(output)[1].split(".")[0], "parquet"]))
+    data.to_parquet(path=output_path, engine='pyarrow', index=False)
+
+    return output_path
 
 
-parent = os.path.split("__filename__")[0]
-os.path.split(parent)[0]
+def upload_dataset(args):
+    
+    user = args.user
+    password = args.password
+    server = args.server
+    port = args.port
+    database = args.database
+    table = args.table
+    data_url = args.data_url
+    output = args.output_file
+    preprocess = args.preprocess
 
+    os.system(f"wget {data_url} -O {output}")
 
-# In[ ]:
+    if output.endswith(".csv"):
+        output = convert_to_parquet(output)
+        print(f"{output}")
 
+    batch_size = 100000
+    pf = ParquetFile(f'{output}')
 
-pf = ParquetFile('../ny-taxi-data/yellow_tripdata_2021-01.parquet') 
-dataset_nrows = next(pf.iter_batches(batch_size = 100)) 
-data = pa.Table.from_batches([dataset_nrows]).to_pandas()
-data
-
-
-# In[ ]:
-
-
-# data["tpep_pickup_datetime"] = data["tpep_pickup_datetime"].apply(lambda x: datetime.strftime(x, "%y-%m-%d %H:%M:%S"))
-# data["tpep_pickup_datetime"] = data["tpep_pickup_datetime"].apply(lambda x: datetime.strftime(x, "%y-%m-%d %H:%M:%S"))
-
-
-# In[23]:
-
-
-engine = create_engine("postgresql://root:root@localhost/ny_taxi")
-engine.connect()
-
-
-# In[24]:
-
-
-print(pd.io.sql.get_schema(data, name="yellow_taxi_data", con=engine))
-
-
-# In[ ]:
-
-
-query = """
-SELECT *
-FROM pg_catalog.pg_tables
-WHERE schemaname != 'pg_catalog' AND
-    schemaname != 'information_schema';
-"""
-
-pd.read_sql(query, con=engine)
-
-
-# In[25]:
-
-
-df_head = data.head(0)
-df_head.to_sql(name="yellow_taxi_tripdata", con=engine, if_exists='replace')
-
-
-# In[28]:
-
-
-pf = ParquetFile('../ny-taxi-data/yellow_tripdata_2021-01.parquet') 
-
-batch_size = 100000
-pf_iter = pf.iter_batches(batch_size = batch_size)
-
-while batch_size == 100000  :
-    t_start = time()
-    dataset_nrows = next(pf_iter)
+    dataset_nrows = next(pf.iter_batches(batch_size = 1)) 
     data = pa.Table.from_batches([dataset_nrows]).to_pandas()
+    data.columns = data.columns.str.lower()
 
-    data["tpep_pickup_datetime"] = pd.to_datetime(data["tpep_pickup_datetime"])
-    data["tpep_dropoff_datetime"] = pd.to_datetime(data["tpep_dropoff_datetime"])
+    engine = create_engine(f'postgresql://{user}:{password}@{server}:{port}/{database}')
+    engine.connect()
 
-    data.to_sql(name="yellow_taxi_tripdata", con=engine, if_exists='append')
+    print(pd.io.sql.get_schema(data, name=f'{table}', con=engine))
 
-    batch_size = dataset_nrows.num_rows
+    df_head = data.head(0)
+    df_head.to_sql(name=f'{table}', con=engine, if_exists='replace')
 
-    t_end = time()
+    pf_iter = pf.iter_batches(batch_size = batch_size)
 
-    print("...inserting data %.2f" %(t_end - t_start))
+    while True  :
+        try:
+            t_start = time()
+            dataset_nrows = next(pf_iter)
+
+            data = pa.Table.from_batches([dataset_nrows]).to_pandas()
+            data.columns = data.columns.str.lower()
+
+            if preprocess=="yes":
+                data["tpep_pickup_datetime"] = pd.to_datetime(data["tpep_pickup_datetime"])
+                data["tpep_dropoff_datetime"] = pd.to_datetime(data["tpep_dropoff_datetime"])
+
+            data.to_sql(name=f'{table}', con=engine, if_exists='append')
+
+            t_end = time()
+
+            print("...inserting data %.2f" %(t_end - t_start))
+
+        except StopIteration:
+            print (f"All data is uploaded to {table}")
+            break
 
 
-# In[27]:
+if __name__=="__main__":
 
+    parser = argparse.ArgumentParser(description="Ingest data to database",
+                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("-U", "--user", help="user")
+    parser.add_argument("-P", "--password", help="password")
+    parser.add_argument("-S", "--server", help="server url")
+    parser.add_argument("--port", help="port to connect")
+    parser.add_argument("-D", "--database", help="database")
+    parser.add_argument("-T", "--table", help="name of inserting table")
+    parser.add_argument("--data_url", help="url of data to download")
+    parser.add_argument("--output_file", help="filename download output")
+    parser.add_argument("--preprocess", help="yes/no preprocessiong of the data")
 
-dataset_nrows.num_rows
-
-
-# In[16]:
+    args = parser.parse_args()
+    
+    print(args)
+    
+    upload_dataset(args)
 
 
 
